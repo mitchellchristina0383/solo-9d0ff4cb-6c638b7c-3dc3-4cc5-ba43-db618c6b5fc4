@@ -1,0 +1,69 @@
+2026-11-23T08:22:11Z api.example.com 200
+www.example.com - - [22/Nov/2026:08:59:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+static.example.net,200
+{"domain": "shop.example.org", "status": 200, "path": "/api/v2/search"}
+this line has no status at all
+cdn.shop.example.org 200
+ledger.example.io 200 91.203.7.57 GET /v1/items
+2026-11-23T09:04:11Z media.example.dev 200
+api.example.com - - [22/Nov/2026:09:41:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+www.example.com,200
+{"domain": "static.example.net", "status": 200, "path": "/api/v2/search"}
+shop.example.org 200
+cdn.shop.example.org 200 91.203.7.99 GET /v1/items
+2026-11-23T09:46:11Z ledger.example.io 200
+broken.example.com nine-hundred
+media.example.dev - - [22/Nov/2026:09:23:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+api.example.com,200
+{"domain": "www.example.com", "status": 200, "path": "/api/v2/search"}
+static.example.net 200
+shop.example.org 200 91.203.7.141 GET /v1/items
+2026-11-23T10:28:11Z cdn.shop.example.org 200
+ledger.example.io - - [22/Nov/2026:10:05:00 +0000] "GET /checkout HTTP/1.1" 201 512 "-" "curl/8.5.0"
+media.example.dev,201
+{"domain": "api.example.com", "status": 204, "path": "/api/v2/search"}
+www.example.com 204
+static.example.net 301 91.203.7.183 GET /v1/items
+2026-11-23T11:10:11Z shop.example.org 304
+cdn.shop.example.org - - [22/Nov/2026:11:47:00 +0000] "GET /checkout HTTP/1.1" 304 512 "-" "curl/8.5.0"
+ledger.example.io,400
+{"domain": "media.example.dev", "status": 400, "path": "/api/v2/search"}
+api.example.com 403
+www.example.com 404 91.203.7.225 GET /v1/items
+2026-11-23T11:52:11Z static.example.net 404
+shop.example.org - - [22/Nov/2026:11:29:00 +0000] "GET /checkout HTTP/1.1" 404 512 "-" "curl/8.5.0"
+cdn.shop.example.org,429
+{"domain": "ledger.example.io", "status": 500, "path": "/api/v2/search"}
+media.example.dev 500
+api.example.com 503 91.203.7.17 GET /v1/items
+2026-11-23T12:34:11Z www.example.com 200
+# comment lines are ignored
+static.example.net - - [22/Nov/2026:12:11:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+shop.example.org,200
+{"domain": "cdn.shop.example.org", "status": 200, "path": "/api/v2/search"}
+ledger.example.io 200
+
+media.example.dev 200 91.203.7.59 GET /v1/items
+2026-11-23T13:16:11Z api.example.com 200
+www.example.com - - [22/Nov/2026:13:53:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+static.example.net,200
+{"domain": "shop.example.org", "status": 200, "path": "/api/v2/search"}
+cdn.shop.example.org 200
+ledger.example.io 200 91.203.7.101 GET /v1/items
+2026-11-23T13:58:11Z media.example.dev 200
+api.example.com - - [22/Nov/2026:14:35:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+www.example.com,200
+{"domain": "static.example.net", "status": 200, "path": "/api/v2/search"}
+shop.example.org 200
+cdn.shop.example.org 200 91.203.7.143 GET /v1/items
+2026-11-23T14:40:11Z ledger.example.io 200
+media.example.dev - - [22/Nov/2026:14:17:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+api.example.com,200
+{"domain": "www.example.com", "status": 200, "path": "/api/v2/search"}
+static.example.net 200
+shop.example.org 200 91.203.7.185 GET /v1/items
+2026-11-23T15:22:11Z cdn.shop.example.org 200
+ledger.example.io - - [22/Nov/2026:15:59:00 +0000] "GET /checkout HTTP/1.1" 200 512 "-" "curl/8.5.0"
+media.example.dev,201
+{"domain": "api.example.com", "status": 201, "path": "/api/v2/search"}
+www.example.com 204
