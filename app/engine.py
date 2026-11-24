@@ -23,10 +23,19 @@ import threading
 import time
 
 from .config import Settings
+from .diversion import (
+    DiversionInputError,
+    build_trial,
+    confirmable,
+)
 from .logparse import ReadResult, ShardReadError, read_shard
 from .models import (
     BlockedPartition,
     Contribution,
+    DiversionConfirmRequest,
+    DiversionTrial,
+    DiversionTrialRequest,
+    DiversionTrialSummary,
     DomainResult,
     FaultInjection,
     FaultMode,
@@ -64,11 +73,27 @@ class EngineError(RuntimeError):
 
 
 class JobBusy(EngineError):
-    pass
+    code = "job_busy"
 
 
 class BadRequest(EngineError):
     pass
+
+
+class TrialConflict(EngineError):
+    """A trial cannot be confirmed because the job changed; recalculate."""
+
+    def __init__(self, message: str, code: str = "results_changed") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class TrialNotConfirmable(EngineError):
+    """The trial itself can never be confirmed (incomplete or not fully divertible)."""
+
+    def __init__(self, message: str, code: str = "trial_not_confirmable") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 _PROCESS_LOCKS: dict[str, threading.Lock] = {}
@@ -673,7 +698,73 @@ class Engine:
         else:
             job.status = JobStatus.COMPLETED
 
-    # --------------------------------------------------------------- results
+    # ------------------------------------------------------------- diversion
+    def create_trial(self, job_id: str, request: DiversionTrialRequest) -> DiversionTrial:
+        """Calculate a diversion trial from one published snapshot.
+
+        Deliberately does **not** take the job's run lock: reading the atomic
+        ``job.json`` gives a consistent snapshot, and an operator must be able to
+        calculate a trial while the source job is being rescanned. The snapshot
+        digest is what later guards confirmation.
+        """
+
+        job = self.store.load_job(job_id)
+        trial_id = self.store.new_trial_id(job_id)
+        try:
+            trial = build_trial(job, trial_id, request)
+        except DiversionInputError as exc:
+            raise BadRequest(str(exc)) from exc
+        self.store.save_trial(trial)
+        return trial
+
+    def get_trial(self, job_id: str, trial_id: str) -> DiversionTrial:
+        # Ensures a missing job is reported as 404 rather than a stray trial file.
+        self.store.load_job(job_id)
+        return self.store.load_trial(job_id, trial_id)
+
+    def list_trials(self, job_id: str) -> list[DiversionTrialSummary]:
+        self.store.load_job(job_id)
+        summaries = [
+            DiversionTrialSummary(
+                trial_id=trial.trial_id,
+                created_at=trial.created_at,
+                offline_shard_id=trial.offline_shard_id,
+                job_status_at_creation=trial.job_status_at_creation,
+                plan_status=trial.plan_status,
+                fully_divertible=trial.fully_divertible,
+                confirmed_at=trial.confirmed_at,
+            )
+            for trial in self.store.list_trials(job_id)
+        ]
+        summaries.sort(key=lambda item: (item.created_at, item.trial_id))
+        return summaries
+
+    def confirm_trial(
+        self, job_id: str, trial_id: str, request: DiversionConfirmRequest | None = None
+    ) -> DiversionTrial:
+        """Confirm a fully divertible trial if its snapshot is still current.
+
+        The job lock is taken so a run cannot interleave between the freshness
+        check and the confirmation write.
+        """
+
+        request = request or DiversionConfirmRequest()
+        with self._job_lock(job_id):
+            trial = self.store.load_trial(job_id, trial_id)
+            if trial.confirmed_at is not None:
+                return trial
+            job = self.store.load_job(job_id)
+            allowed, error_code, reason = confirmable(trial, job)
+            if not allowed:
+                if error_code in ("summary_incomplete_now", "results_changed"):
+                    raise TrialConflict(reason, code=error_code or "results_changed")
+                raise TrialNotConfirmable(reason, code=error_code or "trial_not_confirmable")
+            trial.confirmed_at = utcnow()
+            trial.confirmation_note = request.note
+            self.store.save_trial(trial)
+            return trial
+
+    # -------------------------------------------------------------- results
     def get_results(self, job_id: str) -> ResultsResponse:
         job = self.store.load_job(job_id)
         results: list[DomainResult] = []

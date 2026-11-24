@@ -1,7 +1,7 @@
 services:
   aggregator:
     build: .
-    image: gateway-log-aggregator:1.0.0
+    image: gateway-log-aggregator:1.1.0
     container_name: gateway-log-aggregator
     ports:
       - "8000:8000"

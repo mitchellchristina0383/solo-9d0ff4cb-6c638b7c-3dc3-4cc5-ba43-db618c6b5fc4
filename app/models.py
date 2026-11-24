@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 def utcnow() -> str:
@@ -305,3 +305,174 @@ class MarkSourcesUnavailableRequest(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: Any
+
+
+# ----------------------------------------------------------------- diversion
+# A diversion trial answers one question before a gateway is taken offline:
+# can every request currently served by that gateway be moved to the remaining
+# gateways without exceeding their period request limits?
+#
+# * Each job shard is one gateway.
+# * ``gateway_request_limits`` is the total request ceiling of every remaining
+#   gateway for the same statistical period. Existing requests already served
+#   by that gateway (all domains) are deducted first.
+# * ``domain_allowed_targets`` lists, for every domain affected by the offline
+#   gateway, which remaining gateways may receive its requests.
+# * Remaining capacity is shared by all domains, and one domain may be split
+#   across several gateways.
+
+
+class DiversionPlanStatus(StrEnum):
+    INCOMPLETE = "incomplete"
+    PARTIAL = "partial"
+    FULL = "full"
+
+
+class MissingKind(StrEnum):
+    UNSCANNED_SHARD = "unscanned_shard"
+    STALE_SHARD = "stale_shard"
+    BLOCKED_DOMAIN = "blocked_domain"
+    PENDING_DOMAIN = "pending_domain"
+    NO_PUBLISHED_RESULTS = "no_published_results"
+
+
+class MissingItem(BaseModel):
+    kind: MissingKind
+    shard_ids: list[str] = Field(default_factory=list)
+    domain: str | None = None
+    detail: str | None = None
+
+
+class DiversionTrialRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "offline_shard_id": "gw-03.log",
+                    "gateway_request_limits": {"gw-01.log": 60, "gw-02.log": 60},
+                    "domain_allowed_targets": {
+                        "api.example.com": ["gw-01.log", "gw-02.log"],
+                        "www.example.com": ["gw-01.log"],
+                        "static.example.net": ["gw-01.log", "gw-02.log"],
+                    },
+                }
+            ]
+        },
+    )
+
+    offline_shard_id: str = Field(
+        min_length=1,
+        description="Gateway (job shard) that is about to be taken offline",
+    )
+    gateway_request_limits: dict[str, int] = Field(
+        description=(
+            "Period request ceiling for every remaining gateway (all domains included). "
+            "Must name exactly the job's shards except the offline one."
+        )
+    )
+    domain_allowed_targets: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Affected domain -> remaining gateways allowed to receive its requests. "
+            "When the aggregation is complete this must contain exactly the domains "
+            "served by the offline gateway; an empty list means nothing may be moved."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _basic_checks(self) -> "DiversionTrialRequest":
+        for shard_id, limit in self.gateway_request_limits.items():
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+                raise ValueError(f"request limit for {shard_id!r} must be an integer >= 0")
+        for domain, targets in self.domain_allowed_targets.items():
+            if not domain.strip():
+                raise ValueError("domain_allowed_targets keys must not be empty")
+            if len(set(targets)) != len(targets):
+                raise ValueError(f"duplicate target gateway for domain {domain!r}")
+        return self
+
+
+class DiversionConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional operator note stored with the confirmation",
+    )
+
+
+class GatewayCapacity(BaseModel):
+    shard_id: str
+    request_limit: int = Field(description="Operator-supplied period ceiling")
+    existing_requests: int = Field(
+        description="All requests this gateway already serves in the published snapshot (all domains)"
+    )
+    remaining_capacity: int = Field(
+        description="max(0, request_limit - existing_requests); over-limit gateways have no capacity"
+    )
+    over_limit: bool = Field(description="True when existing_requests exceed request_limit")
+    assigned_requests: int = Field(default=0, description="Requests assigned by this trial")
+    final_requests: int = Field(default=0, description="existing_requests + assigned_requests")
+
+
+class DiversionAssignment(BaseModel):
+    shard_id: str
+    requests: int = Field(gt=0)
+
+
+class DiversionDomainPlan(BaseModel):
+    domain: str
+    requests_to_move: int = Field(description="Requests currently served by the offline gateway")
+    migrated_requests: int
+    unmigrated_requests: int
+    assignments: list[DiversionAssignment] = Field(default_factory=list)
+
+
+class DiversionTrial(BaseModel):
+    schema_version: int = 1
+    trial_id: str
+    job_id: str
+    created_at: str = Field(default_factory=utcnow)
+    offline_shard_id: str
+    job_status_at_creation: JobStatus
+    gateway_request_limits: dict[str, int] = Field(default_factory=dict)
+    domain_allowed_targets: dict[str, list[str]] = Field(default_factory=dict)
+    summary_complete: bool
+    plan_status: DiversionPlanStatus
+    fully_divertible: bool | None = Field(
+        default=None,
+        description="True only when every affected request can be migrated. Only such trials can be confirmed.",
+    )
+    results_fingerprint: str | None = Field(
+        default=None,
+        description="Digest of the published per-domain, per-shard request counts used by this trial",
+    )
+    missing: list[MissingItem] = Field(
+        default_factory=list,
+        description="When the aggregation is incomplete: only the missing items are listed",
+    )
+    gateway_capacity: list[GatewayCapacity] = Field(default_factory=list)
+    domains: list[DiversionDomainPlan] = Field(default_factory=list)
+    total_requests_to_move: int | None = None
+    total_migrated_requests: int | None = None
+    total_unmigrated_requests: int | None = None
+    warnings: list[str] = Field(default_factory=list)
+    confirmed_at: str | None = None
+    confirmation_note: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def confirmed(self) -> bool:
+        return self.confirmed_at is not None
+
+
+class DiversionTrialSummary(BaseModel):
+    trial_id: str
+    created_at: str
+    offline_shard_id: str
+    job_status_at_creation: JobStatus
+    plan_status: DiversionPlanStatus
+    fully_divertible: bool | None
+    confirmed_at: str | None = None

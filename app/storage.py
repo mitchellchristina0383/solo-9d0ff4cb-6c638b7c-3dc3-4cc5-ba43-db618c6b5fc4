@@ -20,10 +20,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import JobState, PartRecord
+from .models import DiversionTrial, JobState, PartRecord
 
 SHARD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
+TRIAL_ID_RE = re.compile(r"^trial-[0-9a-f]{12}$")
 
 
 class StorageError(RuntimeError):
@@ -31,6 +32,10 @@ class StorageError(RuntimeError):
 
 
 class JobNotFound(StorageError):
+    pass
+
+
+class TrialNotFound(StorageError):
     pass
 
 
@@ -57,6 +62,12 @@ def validate_shard_id(shard_id: str) -> str:
             "starting alphanumeric, at most 128 chars"
         )
     return shard_id
+
+
+def validate_trial_id(trial_id: str) -> str:
+    if not TRIAL_ID_RE.fullmatch(trial_id):
+        raise InvalidName("trial id must look like trial-<12 lowercase hex chars>")
+    return trial_id
 
 
 def utcnow() -> str:
@@ -155,6 +166,51 @@ class JobStore:
         if not path.is_dir():
             raise JobNotFound(job_id)
         shutil.rmtree(path)
+
+    # ----------------------------------------------------------------- trials
+    def trials_dir(self, job_id: str) -> Path:
+        return self.job_dir(job_id) / "trials"
+
+    def trial_path(self, job_id: str, trial_id: str) -> Path:
+        return self.trials_dir(job_id) / f"{validate_trial_id(trial_id)}.json"
+
+    def new_trial_id(self, job_id: str) -> str:
+        for _ in range(10):
+            candidate = f"trial-{uuid.uuid4().hex[:12]}"
+            if not self.trial_path(job_id, candidate).exists():
+                return candidate
+        raise StorageError("could not allocate a unique trial id")
+
+    def save_trial(self, trial: DiversionTrial) -> None:
+        self._atomic_write(
+            self.trial_path(trial.job_id, trial.trial_id),
+            json.dumps(trial.model_dump(mode="json"), ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+
+    def load_trial(self, job_id: str, trial_id: str) -> DiversionTrial:
+        path = self.trial_path(job_id, trial_id)
+        if not path.is_file():
+            raise TrialNotFound(f"trial {trial_id} does not exist for job {job_id}")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            trial = DiversionTrial.model_validate(raw)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise StorageError(f"trial state is unreadable for {trial_id}: {exc}") from exc
+        if trial.job_id != job_id or trial.trial_id != trial_id:
+            raise StorageError(f"trial state is inconsistent for {trial_id}")
+        return trial
+
+    def list_trials(self, job_id: str) -> list[DiversionTrial]:
+        directory = self.trials_dir(job_id)
+        if not directory.is_dir():
+            return []
+        trials = []
+        for path in sorted(directory.glob("trial-*.json")):
+            try:
+                trials.append(self.load_trial(job_id, path.stem))
+            except (StorageError, InvalidName):
+                continue
+        return trials
 
     # ------------------------------------------------------------------ parts
     def write_part(self, job_id: str, record: PartRecord, payload: dict) -> PartRecord:
